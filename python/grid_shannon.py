@@ -3,7 +3,7 @@ import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Polygon
 import math
-
+import time
 
 ########################
 #calculate the grid
@@ -11,6 +11,7 @@ import math
 
 landuse = gpd.read_file('aspern_landuse.geojson') #read in the file with the landuse polygons
 
+totalTime = time.time()
 
 
 
@@ -121,10 +122,10 @@ def pointsWithinDist (grid, matchTable, radius = 500):
     centroids['x'] = centroids.geometry.x
     centroids['y'] = centroids.geometry.y
 
+    # --> could probably use geoDataFrame functionality  
+    # --> sofar it takes 6 seconds 
+
     centroids = pd.DataFrame(centroids[['gridID', 'x', 'y' ]])
-
-
-    print('Here we go')
     pointWithinRadDict={}
     for rowA in centroids.itertuples():
         validPoints =[]
@@ -151,40 +152,57 @@ def ShannonIndex (grid, geodf_reprj, matchTable, pointWithinRadDict, landUseCol,
     # lanUseCol = column of geodf_reprj with landUse information that should be used for the Shannon calculation
     # outputGeom = which geometry is usd for Shannon Index calc, block/polygon level ("polygon", default) or grid cells ("grid")
 
+    # something with grid -- > 0,0003 s
     grid = grid.loc[grid['gridID'].isin(matchTable['gridID'].values.tolist())]  # only maintain grid cells that have a corresponding ID in the matching table
+
 
     grid['div_index'] = "" # create empty column for shanin index values
 
-    print ("Index Calc starts here")
-
-    #matchDict = matchTable.groupby(uniqueID)['gridID'].apply(list).to_dict()  # convert the pd to a dict
-
+    # matchDict transform --> 0.00007s
     matchDict = pd.Series(matchTable.OBJECTID.values, index=matchTable.gridID).to_dict() # convert Dataframe to Dict
-
-
-    geodf_reprj.set_index('OBJECTID', inplace=True) # set the column with the unique ID as Index
-
+    
+    #geodf_reprj.set_index('OBJECTID', inplace=True) # set the column with the unique ID as Index
+    print(geodf_reprj.shape)
+    lu_vals = geodf_reprj[landUseCol].values
+    print(len(list(lu_vals)))
     print ('for loops start here')
 
+    landUseCol_ID = 0
+    for i, curCol in enumerate(geodf_reprj.columns):
+        print(curCol, landUseCol, i)
+        if curCol == landUseCol:
+            landUseCol_ID = i
+
+    uniqueLanduseList = geodf_reprj[landUseCol].unique()
+    uniqueLanduseDict = {str(lu):0 for lu in uniqueLanduseList}
     for key in pointWithinRadDict: # iterating through all keys ( means iterating through all gridIDs, for which a Shannon Index value will be calculated
         summands = []
-        landUses = []
-        #print ('first for loop')
-        for point in pointWithinRadDict[key]: # iterating through all the neighboring points (stored in the dict)
-            polygonID = matchDict[point] # for the gridID (resp. point ID), get the corresponding polygon ID
-            pointLandUse = geodf_reprj.loc[polygonID][landUseCol] #get the landuse type of the polygonID
-            landUses.append(pointLandUse) # append the landuse of the point to a list
-        #print ('second for loop')
-        for landUseType in geodf_reprj[landUseCol].unique(): # for each landuse type in the original geodf_reprj
-            #print (landUseType)
-            landUseCount = landUses.count(landUseType) # count the number of points in the neighborhood with this landuse type
+        landUses = [] # could be a dictionary with "residential":450 <- squaremeter number 
+        curLandUseDict = dict(uniqueLanduseDict)
+        # takes 0.01s 
+        
+        for pointID in pointWithinRadDict[key]: # iterating through all the neighboring points (stored in the dict)
+            polygonID = matchDict[pointID] # for the gridID (resp. point ID), get the corresponding polygon ID
+
+            # much faster
+            pointLandUse = lu_vals[25]
+            #pointLandUse =  geodf_reprj.loc[polygonID, landUseCol] # geodf_reprj.loc[polygonID][landUseCol] #get the landuse type of the polygonID
+            #landUses.append(pointLandUse) # append the landuse of the point to a list
+
+            curLandUseDict[pointLandUse] += 1
+    
+        
+        landuseCnt = sum(curLandUseDict.values()) #len(landUses)
+        for landUseType in uniqueLanduseList: # for each landuse type in the original geodf_reprj
+            landUseCount = curLandUseDict[landUseType] #landUses.count(landUseType) # count the number of points in the neighborhood with this landuse type
             if landUseCount != 0:
-                shareLanduse = landUseCount / len(landUses)
+                shareLanduse = landUseCount / landuseCnt
                 p1 = shareLanduse * np.log(shareLanduse) #calculate the summand of the land Use type for the index
                 summands.append(p1)
+
         shannonValue = (-1) * (np.sum(summands)) #calculate the index value for the specific gridID (resp. point)
         grid.loc[grid['gridID'] == key, 'div_index'] = shannonValue #add value to the grid
-
+        
     print(grid.head())
 
 
@@ -197,13 +215,31 @@ def ShannonIndex (grid, geodf_reprj, matchTable, pointWithinRadDict, landUseCol,
 
 geodf_reprj = reproject(landuse)
 
+curTime = time.time()
 grid = createGrid(geodf_reprj)
 
+# print time
+print("grid creation took: ", curTime - time.time())
+
+
+curTime = time.time()
 matchTable = polygon2grid(grid,geodf_reprj, 'OBJECTID')
 
-pointWithinRadDict= pointsWithinDist(grid,matchTable)
+# print time
+print("matchTable creation took: ", curTime - time.time())
 
-ShannonIndex (grid, geodf_reprj, matchTable,pointWithinRadDict,'use_lvl2', 'OBJECTID')
+curTume = time.time()
+pointWithinRadDict = pointsWithinDist(grid,matchTable)
+
+# print time
+print("pointWithinRadDict creation took: ", curTime - time.time())
 
 
+curTime = time.time()
+ShannonIndex(grid, geodf_reprj, matchTable,pointWithinRadDict,'use_lvl2', 'OBJECTID')
 
+# print time
+print("shannon index loop took: ", curTime - time.time())
+
+
+print("totalTime, ", time.time() - totalTime)
